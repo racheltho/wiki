@@ -1,0 +1,16 @@
+{% extends "base_nav.html" %}
+{% block content %}
+
+<h1>Edit page:</h1>
+
+<form method="post" role="form">
+    <h3>{{page.pagename}}</h3>
+    <div class="form-group">
+        <label for="content">Content</label>
+        <textarea class="form-control" name="content" rows="12"
+            id="content">{{page.content}}</textarea>
+    </div>
+   <button type="submit" class="btn btn-default">Submit</button>
+</form>
+<hr>
+{% endblock %}

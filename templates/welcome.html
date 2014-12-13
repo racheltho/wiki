@@ -1,0 +1,9 @@
+{% extends "base_nav.html" %}
+{% block content %}
+    <h2> Welcome, {{username}}! </h2>
+    <br><br>
+    <form action="/logout">
+        <button class="btn btn-default">Log out</button>
+    </form>
+
+{% endblock %}
