@@ -2,11 +2,8 @@ import jinja2
 import os
 import webapp2
 
-from google.appengine.ext import db
-
-from models import User
-from repositories import (UserRepository,
-                          PageRepository)
+from models import (Page,
+                    User)
 import hashing
 import validation
 
@@ -39,16 +36,18 @@ class Handler(webapp2.RequestHandler):
     def render(self, template, **kwargs):
         self.write(self.render_str(template, **kwargs))
 
-    # only render page if valid user_id cookie exists
+    # only render page if valid username cookie exists
     # otherwise redirect to signup page
     def render_secure(self, template, **kwargs):
-        hashed_user_id = self.request.cookies.get('user_id')
-        try:
-            if hashed_user_id and hashing.check_secure_val(hashed_user_id):
+        hashed_username = self.request.cookies.get('username')
+        if hashed_username:
+            username = hashing.check_secure_val(hashed_username)
+            if username:
+                kwargs['username'] = username
                 self.write(self.render_str(template, **kwargs))
             else:
                 self.redirect("/login")
-        except ValueError:
+        else:
             self.redirect("/login")
 
 
@@ -67,7 +66,7 @@ class SignupHandler(Handler):
         verify = self.request.get('verify')
         email = self.request.get('email')
 
-        new_username = UserRepository.username_not_taken(username)
+        username_taken = User.get_by_key_name(username)
         valid_username = validation.valid_username(username)
         valid_password = validation.valid_password(password)
         valid_verify = (verify == password)
@@ -78,7 +77,7 @@ class SignupHandler(Handler):
         kwargs['username'] = username
         kwargs['email'] = email
 
-        if not new_username:
+        if username_taken:
             kwargs['username_exists'] = "That user already exists"
         if not valid_username:
             kwargs['username_error'] = "That's not a valid username"
@@ -104,20 +103,19 @@ class SignupHandler(Handler):
             password_hash_salt = hashing.make_pw_hash(username, password)
 
             # create new user
-            new_user = User(username=username,
+            new_user = User(key_name=username,
+                            username=username,
                             password_hash_salt=password_hash_salt,
                             email=email
                             )
-            # use ip address to find lat/lon
-            n = new_user.put()
-            user_id = n.id()
+            new_user.put()
 
             # create cookie using hashed id
-            hashed_cookie = hashing.make_secure_val(user_id)
+            hashed_cookie = hashing.make_secure_val(username)
             self.response.headers.add_header('Set-Cookie',
-                                             'user_id={}; '
+                                             'username={}; '
                                              'Path=/'.format(hashed_cookie))
-            self.redirect("/")
+            self.redirect("/welcome")
 
 
 class LoginHandler(Handler):
@@ -133,43 +131,50 @@ class LoginHandler(Handler):
         username = self.request.get('username')
         password = self.request.get('password')
 
-        user_id = UserRepository.user_id_from_username_password(username,
-                                                                password)
-
         kwargs['username'] = username
 
-        if not user_id:
-            kwargs['invalid'] = "Invalid Login"
+        user = User.get_by_key_name(username)
+        if user:
+            h = user.password_hash_salt
+            if not hashing.valid_pw(username, password, h):
+                kwargs['password_error'] = "Invalid Password"
+        else:
+            kwargs['username_error'] = "Invalid Username"
+
+        error_dict = {'username_error', 'password_error'}
+        if error_dict & set(kwargs.keys()) != set():
             self.render("login.html", **kwargs)
         else:
-            # create cookie useing hashed id
-            hashed_cookie = hashing.make_secure_val(user_id)
+            # create cookie using hashed id
+            hashed_cookie = hashing.make_secure_val(username)
             self.response.headers.add_header('Set-Cookie',
-                                             'user_id={}; '
+                                             'username={}; '
                                              'Path=/'.format(hashed_cookie))
-            self.redirect("/")
+            self.redirect("/welcome")
 
 
 class LogoutHandler(Handler):
 
     def get(self):
-        self.response.delete_cookie('user_id')
+        self.response.delete_cookie('username')
         self.redirect('/login')
 
 
 class WelcomeHandler(Handler):
 
     def get(self):
-        hashed_user_id = self.request.cookies.get('user_id')
-        if hashed_user_id:
-            user_id = hashing.check_secure_val(hashed_user_id)
-            try:
-                user = User.get_by_id(int(user_id))
+        hashed_username = self.request.cookies.get('username')
+        if hashed_username:
+            username = hashing.check_secure_val(hashed_username)
+            if username:
+                page = Page.get_or_insert("/welcome", pagename="/welcome")
+                if page.content is None:
+                    page.content = ""
                 self.response.headers['Content-Type'] = 'text/html'
-                users = db.GqlQuery("SELECT * FROM User ")
-                users = list(users)
-                self.render("welcome.html", username=user.username)
-            except TypeError:
+                self.render_secure("welcome.html",
+                            username=username,
+                            page=page)
+            else:
                 self.redirect("/login")
         else:
             self.redirect("/login")
@@ -178,9 +183,9 @@ class WelcomeHandler(Handler):
 class PageHandler(Handler):
 
     def get(self, pagename):
-        page = PageRepository.get_page_by_name(pagename)
+        page = Page.get_by_key_name(pagename)
         if page:
-            self.render("page.html", page=page)
+            self.render_secure("page.html", page=page)
         else:
             self.redirect('/_edit' + pagename)
 
@@ -188,12 +193,14 @@ class PageHandler(Handler):
 class EditHandler(Handler):
 
     def get(self, pagename):
-        page = PageRepository.get_page_by_name(pagename, create_if_none=True)
-        self.render("editpage.html", page=page)
+        page = Page.get_or_insert(pagename, pagename=pagename)
+        if page.content is None:
+            page.content = ""
+        self.render_secure("editpage.html", page=page)
 
     def post(self, pagename):
         content = self.request.get('content')
-        page = PageRepository.get_page_by_name(pagename, create_if_none=True)
+        page = Page.get_or_insert(pagename, pagename=pagename)
         page.content = content
         page.put()
         self.redirect(pagename)
@@ -203,8 +210,8 @@ PAGE_RE = r'(/(?:[a-zA-Z0-9_-]+/?)*)'
 app = webapp2.WSGIApplication([('/signup', SignupHandler),
                               ('/login', LoginHandler),
                               ('/logout', LogoutHandler),
+                              ('/welcome', WelcomeHandler),
                               ('/_edit' + PAGE_RE, EditHandler),
-                              (PAGE_RE, PageHandler),
-                              ('/', WelcomeHandler)],
+                              (PAGE_RE, PageHandler)],
                               debug=True
                               )
